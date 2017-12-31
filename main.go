@@ -186,6 +186,12 @@ func (f *Firewall) InitializeChain(defaults bool) error {
 		return err
 	}
 
+	// Attach to FORWARD to catch routed packets
+	err = f.InsertUnique("FORWARD", rulespec...)
+	if err != nil {
+		return err
+	}
+
 	// initialize some default deny rules here?
 	if defaults {
 		// allow related traffic
