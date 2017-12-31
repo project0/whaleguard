@@ -225,16 +225,31 @@ func (f *Firewall) AddContainer(containerID string, client *client.Client) error
 			})
 		}
 	}
-	ip := info.NetworkSettings.GlobalIPv6Address
-	if len(ports) < 1 || ip == "" {
-		fmt.Println("No Ipv6 address or port assigned to this container")
+
+	var ips []string
+
+	if info.NetworkSettings.GlobalIPv6Address != "" {
+		ips = append(ips, info.NetworkSettings.GlobalIPv6Address)
+	}
+
+	// add additional networks
+	for _, network := range info.NetworkSettings.Networks {
+		if network.GlobalIPv6Address != "" {
+			ips = append(ips, network.GlobalIPv6Address)
+		}
+	}
+
+	if len(ports) < 1 || len(ips) < 1 {
+		log.Printf("No Ipv6 address or port assigned to container '%s', '%v', '%v'", containerID, ips, ports)
 		return nil
 	}
 
-	for _, pp := range ports {
-		err := f.AddRule(info.ID, ip, pp)
-		if err != nil {
-			fmt.Println(err)
+	for _, ip := range ips {
+		for _, pp := range ports {
+			err := f.AddRule(info.ID, ip, pp)
+			if err != nil {
+				log.Print(err)
+			}
 		}
 	}
 	return nil
