@@ -10,8 +10,10 @@ As the main focus is protecting the native `ipv6` subnet, ipv4 is currently not 
 ## Usage
 
 ```
+-chain string   Set name of iptables chain to manage (default "WHALEGUARD")
 -defaults       Add some default deny rules
 -iface string   Incoming network interface on host (default "eth0")
+-label string   Discovery only container attached with this label (default "whaleguard=true")
 -network string Created chain just cares about this subnet
 ```
 

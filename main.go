@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"log"
 	"net"
-	"os"
 	"strconv"
 	"strings"
 
@@ -20,6 +19,8 @@ func main() {
 	IncomingInterface := flag.String("iface", "eth0", "Incoming network interface on host")
 	Subnet := flag.String("network", "::/0", "Created chain just cares about this subnet")
 	DefaultDenyRules := flag.Bool("defaults", false, "Add some default deny rules")
+	ChainName := flag.String("chain", "WHALEGUARD", "Set name of iptables chain to manage")
+	DockerLabelFilter := flag.String("label", "whaleguard=true", "Discovery only container attached with this label")
 	flag.Parse()
 
 	// check interface exists before starting
@@ -50,20 +51,23 @@ func main() {
 
 	fw := Firewall{
 		IPTables:  ipt,
-		ChainName: "WHALEGUARD",
+		ChainName: *ChainName,
 		Table:     "filter",
 		Interface: *IncomingInterface, // incoming interface before routing
 		Network:   ipnet,
 	}
 
 	// enforce older api version
-	os.Setenv("DOCKER_API_VERSION", "1.26")
+	// os.Setenv("DOCKER_API_VERSION", "1.26")
 	cl, err := client.NewEnvClient()
 	if err != nil {
 		panic(err)
 	}
-	containerFilterArgs := filters.NewArgs(
-		filters.Arg("label", "whaleguard=true"))
+
+	containerFilterArgs := filters.NewArgs()
+	if *DockerLabelFilter != "" {
+		containerFilterArgs.Add("label", *DockerLabelFilter)
+	}
 
 	if err = fw.InitializeChain(*DefaultDenyRules); err != nil {
 		panic(err)
@@ -95,14 +99,23 @@ func main() {
 	for {
 		select {
 		case event := <-chanEvents:
+
+			logInfo := fmt.Sprintf("container_id=%s event_action=%s", event.Actor.ID, event.Action)
+
 			switch event.Action {
 			case "start":
-				fw.AddContainer(event.ID, cl)
+				err := fw.AddContainer(event.ID, cl)
+				if err != nil {
+					log.Printf("Failed to add container: %v %s\n", err, logInfo)
+				}
 			case "die":
-				log.Printf("Remove rules for container %s\n", event.Actor.ID)
-				fw.DropRules(event.Actor.ID)
+				log.Printf("Remove rules for container %s\n", logInfo)
+				err := fw.DropRules(event.Actor.ID)
+				if err != nil {
+					log.Printf("Failed to remove container: %v %s\n", err, logInfo)
+				}
 			default:
-				log.Printf("Unhandled event action: %s", event.Action)
+				log.Printf("Unhandled event action %s\n", logInfo)
 			}
 		case errors := <-chanErrors:
 			log.Panic(errors.Error())
@@ -195,11 +208,20 @@ func (f *Firewall) InitializeChain(defaults bool) error {
 	// initialize some default deny rules here?
 	if defaults {
 		// allow related traffic
-		f.IPTables.Append(f.Table, f.ChainName, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+		err := f.IPTables.Append(f.Table, f.ChainName, "-m", "state", "--state", "ESTABLISHED,RELATED", "-j", "ACCEPT")
+		if err != nil {
+			return err
+		}
 		// allow v6 icmp packages
-		f.IPTables.Append(f.Table, f.ChainName, "-p", "ipv6-icmp", "-j", "ACCEPT")
+		err = f.IPTables.Append(f.Table, f.ChainName, "-p", "ipv6-icmp", "-j", "ACCEPT")
+		if err != nil {
+			return err
+		}
 		// last but not least, reject everything else
-		f.IPTables.Append(f.Table, f.ChainName, "-j", "REJECT", "--reject-with", "icmp6-adm-prohibited")
+		err = f.IPTables.Append(f.Table, f.ChainName, "-j", "REJECT", "--reject-with", "icmp6-adm-prohibited")
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -294,7 +316,8 @@ func (f *Firewall) DropRules(containerID string) error {
 		return err
 	}
 
-	var failed error
+	failed := []string{}
+
 	for _, r := range rules {
 		// just grep for the correct container
 		if strings.Contains(r, containerID) {
@@ -305,10 +328,13 @@ func (f *Firewall) DropRules(containerID string) error {
 			log.Printf("Delete rule: %v", rulespec)
 			err := f.IPTables.Delete(f.Table, f.ChainName, rulespec...)
 			if err != nil {
-				failed = err
-				log.Fatal(err)
+				failed = append(failed, err.Error())
 			}
 		}
 	}
-	return failed
+
+	if len(failed) > 0 {
+		return fmt.Errorf("iptables delete failed with errors: %s", strings.Join(failed, ","))
+	}
+	return nil
 }
